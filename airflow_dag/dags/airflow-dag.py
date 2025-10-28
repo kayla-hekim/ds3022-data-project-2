@@ -1,10 +1,13 @@
-# prefect flow goes here
+# airflow DAG goes here
 
-import requests
+from airflow.decorators import dag, task
+from datetime import datetime, timedelta
 import boto3
-from prefect import flow, task, get_run_logger
+import requests
 import time
 import re
+import logging 
+
 
 my_uvaid = "rkf9wd"
 queue_url = f"https://j9y2xa0vx0.execute-api.us-east-1.amazonaws.com/api/scatter/{my_uvaid}"
@@ -14,42 +17,24 @@ submit_url = "https://sqs.us-east-1.amazonaws.com/440848399208/dp2-submit"
 sqs = boto3.client("sqs")
 
 
-### HELPERS ###
-# def get_queue_attributes2(sqs_url):
-#     # logger = get_run_logger()
-#     try:
-#         response = sqs.get_queue_attributes(
-#             QueueUrl=sqs_url,
-#             AttributeNames=['All']
-#         )
-#         return response
-#     # logger = get_run_logger()
-#     except Exception as e:
-#         print(f"Error getting queue attributes: {e}")
-#         # logger = get_run_logger()
-#         raise e
-
-
 ### TASKS ###
 
 @task
 def start_populate_queue(queue_url_start):
-    logger = get_run_logger()
     try:
         response = requests.post(queue_url_start)
         response.raise_for_status()
         payload = response.json()
-        logger.info(f"Scatter API payload: {payload}")
+        logging.info(f"finished starting queue: {payload}")
         return payload
     except Exception as e:
         print(f"Error starting queue: {e}")
-        logger.warning(f"Couldn't finish starting and loading queue: {e}")
+        logging(f"Error starting queue: {e}")
         raise e
-    
+
 
 @task
 def read_store_messages(sqs_url):
-    logger = get_run_logger()
     deadline = time.time() + 16 * 60  # 960 sec
     results = []
     
@@ -63,7 +48,6 @@ def read_store_messages(sqs_url):
                     "ApproximateNumberOfMessagesDelayed",
                 ],
             )
-            logger.info(f"Queue status: {attrs}")
 
             response = sqs.receive_message(
                 QueueUrl=sqs_url,
@@ -73,7 +57,6 @@ def read_store_messages(sqs_url):
                 MessageAttributeNames=["All"],
             )
 
-            logger.info(f"Response completed: received message: {response}")
 
             messages = response.get("Messages", [])
 
@@ -85,49 +68,39 @@ def read_store_messages(sqs_url):
                 results.append(temp)
                 print(temp)
 
-                logger.info(f"Completed reading message of {message}")
                 sqs.delete_message(
                     QueueUrl=sqs_url,
                     ReceiptHandle=message["ReceiptHandle"]
                 )
 
-        logger.info(f"Completed obtaining message fragments in list: {results}")
         return results
 
     except Exception as e:
-        logger.warning(f"Issue reading message: {e}")
         raise e
-    
+
 
 @task
 def sort_results(results):
-    logger = get_run_logger()
     if not results:
-        logger.warning(f"There is no results from last method read_store_messages")
         return []
-    
+
     results.sort(key=lambda pair: pair[0])
-    logger.info(f"sorted results: {results}")
     return results
 
 
 @task
 def assemble_fragments(sorted_fragments):
-    logger = get_run_logger()
     if not sorted_fragments:
-        logger.warning(f"There is no sorted_fragments")
         return ""
     
     words = [fragment for (_, fragment) in sorted_fragments]
     result = " ".join(words)
     result = re.sub(r"\s+([,.;:!?])", r"\1", result)
-    logger.info(f"assembled fragments into string, stripping of weird phrasing issues: {result}")
     return result
 
 
 @task
 def send_solution(uvaid, phrase, platform):
-    logger = get_run_logger()
     try:
         response = sqs.send_message(
             QueueUrl=submit_url,
@@ -151,7 +124,6 @@ def send_solution(uvaid, phrase, platform):
         print("SQS send_message status:", status_code)
 
         if status_code != 200:
-            logger.warning(f"Submission failed with HTTP {status_code}, full response: {response}")
             raise RuntimeError(f"Submission failed with HTTP {status_code}, full response: {response}")
 
         print("Submission OK. MessageId:", response.get("MessageId"))
@@ -159,56 +131,33 @@ def send_solution(uvaid, phrase, platform):
         # print(f"{phrase}")
 
     except Exception as e:
-        logger.warning(f"Couldn't send solution due to error: {e}")
-
-
-### FLOW ###
-
-@flow
-def get_queue_submit(do_scatter_now=False):
-    logger = get_run_logger()
-    logger.info(f"-----INITIATING PREFECT FLOW FOR QUEUE-----\n")
-
-    if do_scatter_now:
-        logger.info("* Starting population of queue:")
-        start_populate_queue(queue_url)
-    else:
-        logger.info("* Skipping population step; using existing queue contents")
-
-
-    logger.info(f"* Reading then storing messages in list of di-tuples:")
-    fragments = read_store_messages(sqs_url)
-
-    logger.info(f"* Sorting fragments of message:")  
-    sorted_fragments = sort_results(fragments)
-
-
-    # debugging:
-    logger.info(f"* DEBUG: we have {len(sorted_fragments)} fragments after sort")
-    logger.info(f"* DEBUG: order numbers = {[n for (n, _) in sorted_fragments]}")
-    logger.info(f"* DEBUG: words = {[w for (_, w) in sorted_fragments]}")
-
-
-    logger.info(f"* Assembling sorted message fragments into final message string:")
-    assembled_string = assemble_fragments(sorted_fragments)
-
-    logger.info(f"* Submitting string to submission url:")
-    send_solution(my_uvaid, assembled_string, "prefect")
+        raise e
 
 
 
+### DAG ###
 
-### MAIN ###
+@dag(
+    dag_id="whatever_name_you_want",
+    start_date=datetime(2025, 10, 28),
+    schedule=None,
+    catchup=False,
+    default_args={
+        "owner": "airflow",
+        "retries": 0,
+        "retry_delay": timedelta(minutes=5),
+    },
+    # tags=["dp2", "sqs", "uva"],
+)
+def get_queue_submit():
+    trigger_task = start_populate_queue(queue_url)
+    fragments_task = read_store_messages(sqs_url)
+    sorted_task = sort_results(fragments_task)
+    assembled_task = assemble_fragments(sorted_task)
+    submit_task = send_solution(my_uvaid, assembled_task, "airflow")
 
-if __name__ == "__main__":
-    # returned_info = start_populate_queue(queue_url)
-    # attributes = get_queue_attributes2(sqs_url)
-    # print(attributes['Attributes']['ApproximateNumberOfMessages'])
-    # print(attributes['Attributes']['ApproximateNumberOfMessagesNotVisible'])
-    # print(attributes['Attributes']['ApproximateNumberOfMessagesDelayed'])
-    # fragments = read_store_messages(sqs_url)
-    # sorted_fragments = sort_results(fragments)
-    # assembled_string = assemble_fragments(sorted_fragments)
-    # print(assembled_string)
+    trigger_task >> fragments_task >> sorted_task >> assembled_task >> submit_task
 
-    get_queue_submit(do_scatter_now=False)
+
+## CALL DAG ## 
+dag = get_queue_submit()
