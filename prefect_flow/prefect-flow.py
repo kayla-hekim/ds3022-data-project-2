@@ -15,6 +15,8 @@ sqs = boto3.client("sqs")
 
 
 ### HELPERS ###
+
+# helper get queue attributes from class
 # def get_queue_attributes2(sqs_url):
 #     # logger = get_run_logger()
 #     try:
@@ -32,6 +34,7 @@ sqs = boto3.client("sqs")
 
 ### TASKS ###
 
+# populating the queue (run only once in flow)
 @task
 def start_populate_queue(queue_url_start):
     logger = get_run_logger()
@@ -40,21 +43,25 @@ def start_populate_queue(queue_url_start):
         response.raise_for_status()
         payload = response.json()
         logger.info(f"Scatter API payload: {payload}")
-        return payload
+        return payload # have all 21 items in queue
     except Exception as e:
         print(f"Error starting queue: {e}")
         logger.warning(f"Couldn't finish starting and loading queue: {e}")
         raise e
     
 
+# reading in each message as tuple (order num, word)
 @task
 def read_store_messages(sqs_url):
     logger = get_run_logger()
+    # time constraint
     deadline = time.time() + 16 * 60  # 960 sec
-    results = []
+    results = [] # store items in tuple (order num, word)
     
     try:
+        # if we haven't reached 21 items grabbed from queue, and if we're under 960 sec:
         while len(results) < 21 and time.time() < deadline:
+            # get the attributes listed from queue items
             attrs = sqs.get_queue_attributes(
                 QueueUrl=sqs_url,
                 AttributeNames=[
@@ -75,17 +82,20 @@ def read_store_messages(sqs_url):
 
             logger.info(f"Response completed: received message: {response}")
 
+            # store messages from response here
             messages = response.get("Messages", [])
 
             if not messages:
                 continue
 
+            # this is how we get the order num and word to put in tuple, then append to results list
             for message in messages:
                 temp = (int(message['MessageAttributes']['order_no']['StringValue']), message['MessageAttributes']['word']['StringValue'])
                 results.append(temp)
                 print(temp)
 
                 logger.info(f"Completed reading message of {message}")
+                # need to delete item from queue once seen
                 sqs.delete_message(
                     QueueUrl=sqs_url,
                     ReceiptHandle=message["ReceiptHandle"]
@@ -99,25 +109,30 @@ def read_store_messages(sqs_url):
         raise e
     
 
+# sorting words based on first tuple item order num (0, 1, 2, etc) in list results
 @task
 def sort_results(results):
     logger = get_run_logger()
     if not results:
         logger.warning(f"There is no results from last method read_store_messages")
+        # somehow there's nothing in results from read_store_messages
         return []
     
-    results.sort(key=lambda pair: pair[0])
+    results.sort(key=lambda pair: pair[0]) # sort based on (this, ___) in list results
     logger.info(f"sorted results: {results}")
     return results
 
 
+# assembling tuples number in order into string
 @task
 def assemble_fragments(sorted_fragments):
     logger = get_run_logger()
     if not sorted_fragments:
+        # somehow list is empty - look at sort_results
         logger.warning(f"There is no sorted_fragments")
         return ""
     
+    # loop over items in sorted list as a new list of strings, then assemble in string builder
     words = [fragment for (_, fragment) in sorted_fragments]
     result = " ".join(words)
     result = re.sub(r"\s+([,.;:!?])", r"\1", result)
@@ -125,6 +140,7 @@ def assemble_fragments(sorted_fragments):
     return result
 
 
+# send string assembled into the submit queue
 @task
 def send_solution(uvaid, phrase, platform):
     logger = get_run_logger()
@@ -154,6 +170,7 @@ def send_solution(uvaid, phrase, platform):
             logger.warning(f"Submission failed with HTTP {status_code}, full response: {response}")
             raise RuntimeError(f"Submission failed with HTTP {status_code}, full response: {response}")
 
+        # debugging
         print("Submission OK. MessageId:", response.get("MessageId"))
         print(f"Response: {response}")
         # print(f"{phrase}")
@@ -164,6 +181,7 @@ def send_solution(uvaid, phrase, platform):
 
 ### FLOW ###
 
+# flow of all the above task methods
 @flow
 def get_queue_submit(do_scatter_now=False):
     logger = get_run_logger()
@@ -211,4 +229,5 @@ if __name__ == "__main__":
     # assembled_string = assemble_fragments(sorted_fragments)
     # print(assembled_string)
 
+    # call flow
     get_queue_submit(do_scatter_now=False)
