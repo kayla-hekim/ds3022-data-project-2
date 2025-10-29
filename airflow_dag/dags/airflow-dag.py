@@ -6,7 +6,6 @@ import boto3
 import requests
 import time
 import re
-import logging 
 
 
 my_uvaid = "rkf9wd"
@@ -26,11 +25,10 @@ def start_populate_queue(queue_url_start):
         response = requests.post(queue_url_start)
         response.raise_for_status()
         payload = response.json()
-        logging.info(f"finished starting queue: {payload}") 
+        print(f"finished starting queue: {payload}")
         return payload # have all 21 items in queue
     except Exception as e:
         print(f"Error starting queue: {e}")
-        logging.warning(f"Error starting queue: {e}")
         raise e
 
 
@@ -53,6 +51,7 @@ def read_store_messages(sqs_url):
                     "ApproximateNumberOfMessagesDelayed",
                 ],
             )
+            print(f"Queue status: {attrs}")
 
             response = sqs.receive_message(
                 QueueUrl=sqs_url,
@@ -61,6 +60,7 @@ def read_store_messages(sqs_url):
                 VisibilityTimeout=60,
                 MessageAttributeNames=["All"],
             )
+            print(f"Response completed: received message: {response}")
 
             # store messages from response here
             messages = response.get("Messages", [])
@@ -74,15 +74,18 @@ def read_store_messages(sqs_url):
                 results.append(temp)
                 print(temp)
 
+                print(f"Completed reading message of {message}")
                 # need to delete item from queue once seen
                 sqs.delete_message(
                     QueueUrl=sqs_url,
                     ReceiptHandle=message["ReceiptHandle"]
                 )
 
+        print(f"Completed obtaining message fragments in list: {results}")
         return results
 
     except Exception as e:
+        print(f"Issue reading message: {e}")
         raise e
 
 
@@ -91,9 +94,11 @@ def read_store_messages(sqs_url):
 def sort_results(results):
     if not results:
         # somehow there's nothing in results from read_store_messages
+        print(f"There is no results from last method read_store_messages")
         return []
 
     results.sort(key=lambda pair: pair[0]) # sort based on (this, ___) in list results
+    print(f"sorted results: {results}")
     return results
 
 
@@ -102,12 +107,14 @@ def sort_results(results):
 def assemble_fragments(sorted_fragments):
     if not sorted_fragments:
         # somehow list is empty - look at sort_results
+        print(f"There is no sorted_fragments")
         return ""
     
     # loop over items in sorted list as a new list of strings, then assemble in string builder
     words = [fragment for (_, fragment) in sorted_fragments]
     result = " ".join(words)
     result = re.sub(r"\s+([,.;:!?])", r"\1", result)
+    print(f"assembled fragments into string, stripping of weird phrasing issues: {result}")
     return result
 
 
@@ -137,6 +144,7 @@ def send_solution(uvaid, phrase, platform):
         print("SQS send_message status:", status_code)
 
         if status_code != 200:
+            print(f"Submission failed with HTTP {status_code}, full response: {response}")
             raise RuntimeError(f"Submission failed with HTTP {status_code}, full response: {response}")
 
         # debugging
@@ -145,6 +153,7 @@ def send_solution(uvaid, phrase, platform):
         # print(f"{phrase}")
 
     except Exception as e:
+        print(f"Couldn't send solution due to error: {e}")
         raise e
 
 
@@ -165,10 +174,16 @@ def send_solution(uvaid, phrase, platform):
     # tags=["dp2", "sqs", "uva"],
 )
 def get_queue_submit():
+    print(f"-----INITIATING PREFECT FLOW FOR QUEUE-----\n")
+    print("* Starting population of queue:")
     trigger_task = start_populate_queue(queue_url) # start queue population
+    print("* Reading then storing messages in list of di-tuples:")
     fragments_task = read_store_messages(sqs_url) # grab messages in their raw-er form
+    print("* Sorting fragments of message:")
     sorted_task = sort_results(fragments_task) # sort the words in tuples list
+    print("* Assembling sorted message fragments into final message string:")
     assembled_task = assemble_fragments(sorted_task) # assemble into word
+    print("* Submitting string to submission url:")
     submit_task = send_solution(my_uvaid, assembled_task, "airflow") # submit to submit queue
 
     # order in DAG
