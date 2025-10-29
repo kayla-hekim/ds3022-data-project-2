@@ -14,7 +14,7 @@ queue_url = f"https://j9y2xa0vx0.execute-api.us-east-1.amazonaws.com/api/scatter
 sqs_url = "https://sqs.us-east-1.amazonaws.com/440848399208/rkf9wd"
 submit_url = "https://sqs.us-east-1.amazonaws.com/440848399208/dp2-submit"
 
-sqs = boto3.client("sqs")
+sqs = boto3.client("sqs", region_name="us-east-1")
 
 
 ### TASKS ###
@@ -138,7 +138,7 @@ def send_solution(uvaid, phrase, platform):
 ### DAG ###
 
 @dag(
-    dag_id="whatever_name_you_want",
+    dag_id="dp2_pipeline",
     start_date=datetime(2025, 10, 28),
     schedule=None,
     catchup=False,
