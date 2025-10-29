@@ -29,7 +29,7 @@ def start_populate_queue(queue_url_start):
         return payload
     except Exception as e:
         print(f"Error starting queue: {e}")
-        logging(f"Error starting queue: {e}")
+        logging.warning(f"Error starting queue: {e}")
         raise e
 
 
