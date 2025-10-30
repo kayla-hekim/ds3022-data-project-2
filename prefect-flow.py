@@ -5,13 +5,16 @@ import boto3
 from prefect import flow, task, get_run_logger
 import time
 import re
+import json
 
 my_uvaid = "rkf9wd"
 queue_url = f"https://j9y2xa0vx0.execute-api.us-east-1.amazonaws.com/api/scatter/{my_uvaid}"
 sqs_url = "https://sqs.us-east-1.amazonaws.com/440848399208/rkf9wd"
 submit_url = "https://sqs.us-east-1.amazonaws.com/440848399208/dp2-submit"
 
-sqs = boto3.client("sqs")
+path_persist = "/tmp/fragments.json"
+
+sqs = boto3.client("sqs", region_name="us-east-1")
 
 
 ### HELPERS ###
@@ -33,6 +36,31 @@ sqs = boto3.client("sqs")
 
 
 ### TASKS ###
+
+# writing items from results fragments list into tmp/fragments.json
+# @task
+# def persist_fragments(results, path=path_persist):
+#     logger = get_run_logger()
+#     serializable = [[int(n), str(w)] for (n, w) in results]
+
+#     with open(path, "w") as f:
+#         json.dump(serializable, f)
+
+#     logger.info(f"Persisted {len(results)} fragments to {path}")
+#     return path
+
+
+# loading fragments into json tmp/fragments.json
+# @task
+# def load_fragments(path=path_persist):
+#     logger = get_run_logger()
+#     with open(path, "r") as f:
+#         data = json.load(f)
+
+#     loaded = [(int(n), w) for n, w in data]
+#     logger.info(f"Loaded {len(loaded)} fragments from {path}")
+#     return loaded
+
 
 # populating the queue (run only once in flow)
 @task
@@ -101,8 +129,20 @@ def read_store_messages(sqs_url):
                     ReceiptHandle=message["ReceiptHandle"]
                 )
 
+        # persist and load into json:
+        serializable = [[int(n), str(w)] for (n, w) in results]
+
+        with open(path_persist, "w") as f:
+            json.dump(serializable, f)
+
+        with open(path_persist, "r") as f:
+            data = json.load(f)
+        loaded = [(int(n), w) for n, w in data]
+
+
         logger.info(f"Completed obtaining message fragments in list: {results}")
-        return results
+        # return results
+        return loaded
 
     except Exception as e:
         logger.warning(f"Issue reading message: {e}")
@@ -177,6 +217,7 @@ def send_solution(uvaid, phrase, platform):
 
     except Exception as e:
         logger.warning(f"Couldn't send solution due to error: {e}")
+        raise e
 
 
 ### FLOW ###
@@ -196,6 +237,10 @@ def get_queue_submit(do_scatter_now=False):
 
     logger.info(f"* Reading then storing messages in list of di-tuples:")
     fragments = read_store_messages(sqs_url)
+
+    # logger.info(f"* Persisting and Loading message fragments into json tmp/fragments.json:")
+    # path = persist_fragments(fragments)
+    # loaded = load_fragments(path)
 
     logger.info(f"* Sorting fragments of message:")  
     sorted_fragments = sort_results(fragments)

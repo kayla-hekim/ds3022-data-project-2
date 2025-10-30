@@ -6,6 +6,7 @@ import boto3
 import requests
 import time
 import re
+import json, os
 
 
 my_uvaid = "rkf9wd"
@@ -17,6 +18,29 @@ sqs = boto3.client("sqs", region_name="us-east-1")
 
 
 ### TASKS ###
+
+# writing items from results fragments list into tmp/fragments.json
+@task
+def persist_fragments(results, path="/tmp/fragments.json"):
+    # results is list of tuples- write as list of lists for JSON compatibility
+    with open(path, "w") as f:
+        json.dump(results, f)
+
+    print(f"Persisted {len(results)} fragments to {path}")
+    return path
+
+
+# loading fragments into json tmp/fragments.json
+@task
+def load_fragments(path="/tmp/fragments.json"):
+    with open(path, "r") as f:
+        data = json.load(f)
+
+    data = [(int(n), w) for n, w in data]
+
+    print(f"Loaded {len(data)} fragments from {path}")
+    return data
+
 
 # populating the queue (run only once in flow)
 @task
@@ -174,20 +198,24 @@ def send_solution(uvaid, phrase, platform):
     # tags=["dp2", "sqs", "uva"],
 )
 def get_queue_submit():
-    print(f"-----INITIATING PREFECT FLOW FOR QUEUE-----\n")
+    print(f"-----INITIATING AIRFLOW FLOW FOR QUEUE-----\n")
     print("* Starting population of queue:")
     trigger_task = start_populate_queue(queue_url) # start queue population
     print("* Reading then storing messages in list of di-tuples:")
     fragments_task = read_store_messages(sqs_url) # grab messages in their raw-er form
+    print("* Persisting fragments:")
+    path_task = persist_fragments(fragments_task) # persisting in json
+    print("* Loading fragments:")
+    loaded_task = load_fragments(path_task) # loading fragments into json
     print("* Sorting fragments of message:")
-    sorted_task = sort_results(fragments_task) # sort the words in tuples list
+    sorted_task = sort_results(loaded_task) # sort the words in tuples list
     print("* Assembling sorted message fragments into final message string:")
     assembled_task = assemble_fragments(sorted_task) # assemble into word
     print("* Submitting string to submission url:")
     submit_task = send_solution(my_uvaid, assembled_task, "airflow") # submit to submit queue
 
     # order in DAG
-    trigger_task >> fragments_task >> sorted_task >> assembled_task >> submit_task
+    trigger_task >> fragments_task >> path_task >> loaded_task >> sorted_task >> assembled_task >> submit_task
 
 
 ## CALL DAG ## 
