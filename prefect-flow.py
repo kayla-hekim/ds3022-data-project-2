@@ -234,6 +234,13 @@ def get_queue_submit(do_scatter_now=False):
     else:
         logger.info("* Skipping population step; using existing queue contents")
 
+    attrs = sqs.get_queue_attributes(
+    QueueUrl=sqs_url, AttributeNames=["ApproximateNumberOfMessages"]
+)
+    if int(attrs["Attributes"]["ApproximateNumberOfMessages"]) == 0:
+        logger.info("* re-populating queue")
+        start_populate_queue(queue_url)
+
 
     logger.info(f"* Reading then storing messages in list of di-tuples:")
     fragments = read_store_messages(sqs_url)
