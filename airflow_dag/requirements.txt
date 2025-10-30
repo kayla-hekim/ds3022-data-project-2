@@ -1,7 +1,0 @@
-apache-airflow==2.9.2
-prefect==2.14.10
-boto3
-requests
-# time
-# re
-# logging
